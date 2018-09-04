@@ -1,0 +1,361 @@
+---
+title: "quandle 1 nse"
+author: "Vijay Baby Joseph"
+date: "27 August 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Quandl)
+library(dplyr)
+library(quantmod)
+library(tseries)
+library(forecast)
+library(xts)
+library(ggplot2)
+library(data.table)
+```
+
+
+#A little about the Qnifty...
+
+The Quantum Nifty ETF (QNF) is a replica of the NIFTY 50 - the stock index of NSE. The stocks that form a part of NIFTY 50 also form a part of QNF`s portfolio in the same proportion and weightage as that of the NIFTY 50.
+
+This analysis will focus on Qnifty and its relation to the Nifty with the aim to forcast future performance
+using basic arima, autoarima and ets.
+
+#Loading the data and checking the dataset
+```{r cars}
+
+#Load the data
+
+Quandl.api_key('cmgJvqW3MRmXc8M5RHzU')
+
+#data1=read.csv("C:/Users/Administrator/Desktop/DataScience/nse index/NSE-LT.csv")
+data = Quandl("NSE/QNIFTY", start_date="2012-01-01", end_date="2017-12-31")
+test = Quandl("NSE/QNIFTY", start_date="2018-01-01", end_date="2018-08-29")
+
+niftyone=Quandl("NSE/NIFTY_50", start_date="2012-01-01", end_date="2017-12-31")
+niftytest = Quandl("NSE/NIFTY_50", start_date="2018-01-01", end_date="2018-08-29")
+
+
+# checking the dataset
+head(data)
+str(data)
+class(data)
+
+#avg trading days in a year
+nrow(data)/5
+```
+
+#Moving Average, Volatility, Start, End , etc. 
+
+```{r}
+
+#plotting moving average and volatility
+rolling_average <- rollapply(data[,4],200,mean)
+plot.ts(rolling_average)
+
+rolling_volatility <- rollapply(data[,4],200,sd)
+plot.ts(rolling_volatility)
+
+
+
+#choosing cols and converting to time series
+
+tsdata=data%>%select("Date","Close")
+
+#stocks=ts(rev(tsdata$Close),start=c(2012, 1),frequency=365)
+stocks<- xts(tsdata[,-1],order.by=as.Date(tsdata[,1], "%Y-%m-%d"))# xts takes daily frequency by default
+
+head(stocks)
+
+#mode(stocks)
+
+# structure
+str(stocks)
+
+#start
+start(stocks)
+
+#end
+end(stocks)
+
+#frequency
+frequency(stocks)
+
+#cycle(stocks)
+
+#time series summary
+summary(stocks)
+
+
+#daily returns
+returns <- diff(stocks, arithmetic=FALSE ) - 1
+head(returns)
+
+## simlple line chart of Qnifty ETF
+chartSeries(stocks, name='Qnifty')
+
+
+#merging plot data and deleting na values caused by missing trading values from source
+
+qnf = data.frame(stocks)
+qnf$Date = as.Date(rownames(qnf))
+head(qnf)
+nft=niftyone%>%select('Date','Close')
+
+
+setDT(nft)
+setDT(qnf)
+
+plot0 = nft[qnf, on = c('Date','Date')]
+plot0=na.omit(plot0)
+plot0=plot0%>%select(-Date.1)
+
+
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+
+
+rangenifty=range01(plot1$NiftyIndex)
+plot0$rangeqnf=range01(as.numeric(plot0$stocks))
+plot0$rangenft=range01(as.numeric(plot0$Close))
+
+
+# Plotting both Qnifty and Nifty on a normalised graph
+
+ggplot(plot0, aes(Date)) + 
+  geom_line(aes(y = plot0$rangeqnf, colour = "QNifty Price")) + 
+  geom_line(aes(y = plot0$rangenft, colour = "Nifty Index"))+ggtitle("Qnifty vs Nifty (2012-2017)")+ xlab("Date") + ylab("Normalized Price/Index")
+
+```
+
+
+#Using decompose() to split the ts into seasonality, trend and error components.
+```{r}
+
+#Conversion to ts and plotting
+
+attr(stocks, 'frequency') <- 224  # Set the frequency of the xts object to no. of annaual trading days
+periodicity(stocks)             # check periodicity 
+plot(decompose(as.ts(stocks)))  # Decompose after conversion to ts
+
+decomp <- decompose(as.ts(stocks) ) # type="mult" use type = "additive" for additive components
+plot (decomp)
+
+
+#Dickey-Fuller Test
+adf.test(as.ts(stocks)) # p-value >0.05 indicates the TS is non stationary
+
+
+```
+
+#Using forecast::stl() to split the ts into seasonality, trend and error components and making it stationary
+```{r}
+
+ts.stl <- stl(stocks,"periodic")  # decompose the TS
+plot(ts.stl)
+
+ts.sa <- seasadj(ts.stl)  # de-seasonalize
+
+plot(stocks, type="l")  # original 
+plot(ts.sa, type="l")  # adjusted
+
+# seasonal frequency set as 224  for annual average trading days - 5 years prices preseneted as diff colors
+seasonplot(ts.sa, 224, col=rainbow(5), year.labels=TRUE, main="QNifty") 
+
+# Make it stationary
+ndiffs(as.ts(stocks))  # number of differences need to make it stationary = 1
+
+stationaryTS <- diff(stocks, differences= 1)
+plot(stationaryTS, type="l", main="Differenced and Stationary")  # appears to be stationary
+
+```
+
+
+#Autocorrelation and Partial-Autocorrelation:
+
+The final objective is to find pdq
+AR I MA
+p  d  q
+
+-p is the number of autoregressive terms
+
+-d is the number of nonseasonal differences needed for stationarity - or the no. of differentiations required 
+in this case one as shown in the ndiffs function
+
+-q is the number of lagged forecast errors
+
+```{r}
+# both acf() and pacf() generates plots by default
+acf(as.ts(stocks)) # autocorrelation - determines q value for MA in arima
+pacf(as.ts(stocks))  # partial autocorrelation - determines p value in arima
+
+#its a non stationary series as as the acf falls very gradually and the adf test above gives a p val greter than 0.05
+
+
+#Differencing subtracts each data point in the series from its successor to make it stationary.
+plot(diff(log(as.ts(stocks))))
+
+acf(diff(log(as.ts(stocks)))) # value of q is 1
+pacf(diff(log(as.ts(stocks)))) # value of p is 0
+
+# differentiation is used once so d=1 - this is also whown in the ndiff function above
+```
+
+#ARIMA 
+```{r}
+
+#arima model 
+arimamodel=arima(log(as.ts(stocks)), c(0,1,1), seasonal=list(order=c(0,1,1), period=224))
+
+#predict
+pred=predict(arimamodel, n.ahead = 109)
+
+corpred=2.718^pred$pred
+corpred=round(corpred,digits=2)
+
+plotone=data.frame(test$Date,corpred,test$Close)
+
+#plotting the prices for the next 109 trading days - from jan 2018 till end of august 2018
+ggplot(plotone, aes(plotone$test.Date)) + 
+  geom_line(aes(y = plotone$corpred, colour = "QNifty Price")) + 
+  ggtitle("Qnifty (Jan - Aug 2018) Price Prediction")+ xlab("Date") + ylab("Price")
+
+
+#compare with test
+corpred #predicted prices
+test$Close #actual prices 
+
+
+#Percentage Error
+names(plotone)<-c("Date", "Actual Index","Forecasted Price")
+
+perc_error= function(act,fcst){
+  pe=((act-fcst)/(act))
+  mpe=mean(pe)
+return(mpe)}
+
+
+perc_error(plotone$`Actual Index`,plotone$`Forecasted Price`)
+```
+
+
+
+
+
+#AUTOMATED FORECASTING USING ARIMA AND ETS
+```{r}
+#auto.arima model
+
+logstock=log(stocks)
+fit<-auto.arima(as.ts(logstock),D=1)
+fit
+
+
+#ETS model
+fit2 <- ets(as.ts(stocks),model = "ZZZ",damped = FALSE, lambda = TRUE)
+fit2
+
+
+#Forecasted Values from auto.arima
+forecastedval=forecast(fit,h=109)
+
+forecastedval=as.numeric(forecastedval$mean)
+corforcastedval= exp(forecastedval)
+corforcastedval=round(corforcastedval,digits=4)
+corforcastedval
+
+ts.plot(corforcastedval, gpars=list(xlab="Days-109", ylab="Predicted Price"))
+
+#Percentage Error
+
+corforcastedval=as.data.frame(corforcastedval)
+test$Close=as.data.frame(test$Close)
+
+df<-data.frame(test$Close,corforcastedval)
+names(df)<-c("Actual Index","Forecasted Index")
+df
+
+perc_error(df$`Actual Index`,df$`Forecasted Index`)
+
+
+
+#Forecasted Values From ets
+forecastedval2=forecast(fit2,h=109,method ='ets')
+plot(forecastedval2)
+#forecastedval2
+
+#Percentage Error
+df2<-data.frame(test$Date,test$Close,forecastedval2$mean)
+names(df2)<-c("Date","Actual Index","Forecasted Index")
+
+perc_error(df2$`Actual Index`,df2$`Forecasted Index`)
+
+```
+
+
+
+
+
+#Nifty vs Actual QNifty vs Forecasted 
+```{r}
+
+def=cbind(test$Date,df)
+names(def)<-c("Date","Actual QNifty Price","Auto Arima Forecasted Qnifty Price")
+
+
+finnifty=niftytest%>%select("Date","Close")
+names(finnifty)<-c("Date","NiftyIndex")
+
+
+#merging 
+setDT(finnifty)
+setDT(def)
+
+plot1 = finnifty[def, on = c('Date','Date')]
+plot1=na.omit(plot1)
+plot1=plot1%>%select(-Date.1)
+
+plot1$`ETSForecasted Qnifty Price` = forecastedval2$mean
+plot1$`ARIMAForecasted Qnifty Price` = corpred
+
+plot1
+
+#actual vs forecasted Qnifty
+ggplot(plot1, aes(Date)) + 
+  geom_line(aes(y = plot1$`Actual QNifty Price`, colour = "QNifty Price")) +
+  geom_line(aes(y = plot1$`ARIMAForecasted Qnifty Price`, colour = " ARIMA QNifty Price")) +
+  geom_line(aes(y = plot1$`Auto Arima Forecasted Qnifty Price`, colour = "AutoArima QNifty Price")) +
+  geom_line(aes(y = plot1$`ETSForecasted Qnifty Price`, colour = "ETS QNifty Price")) +
+  ggtitle("Qnifty (Jan - Aug 2018) Price Prediction)")+ xlab("Date") + ylab("Price")
+
+
+# normalizing the index and share price values between 0 and 1
+rangenifty=range01(plot1$NiftyIndex)
+rangeforcast=range01(as.numeric(plot1$`Auto Arima Forecasted Qnifty Price`))
+rangeactual=range01(as.numeric(plot1$`Actual QNifty Price`))
+
+plot2=data.frame(rangenifty,rangeforcast,rangeactual,plot1$Date)
+
+
+#Nifty vs Forecasted Qnifty vs Actual Qnifty Price - Normalised
+ggplot(plot2, aes(plot2$plot1.Date))+ 
+  geom_line(aes(y = plot2$rangenifty, colour = "Actual Nifty")) + 
+  geom_line(aes(y = plot2$rangeforcast, colour = "Forecasted Qnifty Price"))+
+  geom_line(aes(y = plot2$rangeactual,colour = "Actual Qnifty Price"))+ ggtitle("Nifty vs Forecasted Qnifty vs Actual Qnifty Price - Normalised")+xlab("Date")+ ylab("Normalised Price/Index")
+
+
+```
+
+The models built generally confrom to the actual Qnifty price with an error range of 6-8%:
+manual arima-8% 
+auto arima-6% 
+ets-6% 
+
+But greater the range of the prediction into the future, the greater the error.
+
+Furthermore the Indian Markets (as reflected by the Nifty) has been on a steady bull run for the past 5 years.
+There were relatively few economic shocks and the positive fundametals ensured a steady trend with low volatility or reversal. Therefore it was forecasted quite accurately as this trend has continued till now.
